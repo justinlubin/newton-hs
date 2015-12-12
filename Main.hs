@@ -1,10 +1,15 @@
 import Data.List(elemIndex)
+import Data.Maybe
 import Data.Complex
+import Graphics.Gloss
 
 type Number = Double
 type ComplexNumber = Complex Number
 type IterationCount = Integer
-type DataPoint = (ComplexNumber, IterationCount)
+type PointData = (ComplexNumber, IterationCount)
+type RootData = (Int, IterationCount)
+type PointField = [[PointData]]
+type RootField = [[RootData]]
 type Bounds = (Number, Number, Number, Number)
 
 e :: ComplexNumber
@@ -59,9 +64,9 @@ maxIterations :: IterationCount
 maxIterations = 100
 
 epsilon :: Number
-epsilon = 1e-9
+epsilon = 1e-12
 
-newton :: Function -> ComplexNumber -> DataPoint
+newton :: Function -> ComplexNumber -> PointData
 newton f z0 = newton' f z1 z0 0
     where f' = derivative f
           approximate f z = z - (evaluate f z) / (evaluate f' z)
@@ -71,7 +76,7 @@ newton f z0 = newton' f z1 z0 0
               | magnitude (current - previous) < epsilon = (current, n)
               | otherwise = newton' f (approximate f current) current (n + 1)
 
-windowApply :: (ComplexNumber -> DataPoint) -> Bounds -> Number -> [[DataPoint]]
+windowApply :: (ComplexNumber -> PointData) -> Bounds -> Number -> PointField
 windowApply f (top, left, bottom, right) step = [[f (x :+ y ) | x <- xs] | y <- ys]
     where xs = [left, left + step .. right]
           ys = [top, top + step .. bottom]
@@ -79,30 +84,28 @@ windowApply f (top, left, bottom, right) step = [[f (x :+ y ) | x <- xs] | y <- 
 approximateIndex :: ComplexNumber -> [ComplexNumber] -> Maybe Int
 approximateIndex z zs = elemIndex True [magnitude (z - zi) < 1 | zi <- zs]
 
+closestIndex :: ComplexNumber -> [ComplexNumber] -> Int
+closestIndex z zs = snd . minimum $ zip [magnitude (z - zi) | zi <- zs] [0..]
+
 closeEnough :: ComplexNumber -> [ComplexNumber] -> Bool
 closeEnough z zs = case approximateIndex z zs of
     Just _ -> True
-    Nothing -> False
+    Nothing ->  False
 
-roots :: [[DataPoint]] -> [ComplexNumber]
+roots :: PointField -> [ComplexNumber]
 roots field = foldr checkRoot [] flat
     where checkRoot z roots
-              | z `closeEnough` roots = z:roots
-              | otherwise = roots
+              | z `closeEnough` roots = roots
+              | otherwise = z:roots
           flat = fst . unzip . concat $ field
 
---assignRoots :: Function -> Bounds -> Number -> [[(Int, IterationCount)]]
-assignRoots f bounds step = assignRoots' [] windowApplication
-    where windowApplication = windowApply (newton f) bounds step
-          assignRoot roots z = case ai of
-              Just i -> (i, roots)
-              Nothing -> (length roots, roots ++ [z])
-              where ai = approximateIndex z roots
-          assignRoots' roots [[]] = []
-          assignRoots' roots ([]:rows) = assignRoots' roots rows
-          assignRoots' roots ((tuple:tuples):rows) = (fst ar, snd tuple,"      ") : assignRoots' (snd ar) (tuples:rows)
-              where ar = assignRoot roots (fst tuple)
+assignRoot :: [ComplexNumber] -> PointData -> RootData
+assignRoot rs p@(z, iteration) = (closestIndex z rs, iteration)
+
+assignRoots :: PointField -> RootField
+assignRoots field = [[assignRoot fieldRoots p | p <- ps ] | ps <- field]
+    where fieldRoots = roots field
 
 hi = Sum (Power 3 Z) (realConstant (-1))
 
-main = print $ roots $ windowApply (newton hi) (-10, -10, 10, 10) 0.1
+main = mapM_ print $ assignRoots $ windowApply (newton hi) (-10, -10, 10, 10) 0.1
