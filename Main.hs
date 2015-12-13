@@ -1,16 +1,19 @@
+import Data.Word
 import Data.List(elemIndex)
 import Data.Maybe
 import Data.Complex
-import Graphics.Gloss
+import qualified Data.Array.Repa as R
+import Data.Array.Repa.IO.BMP
+import System.Environment
 
 type Number = Double
 type ComplexNumber = Complex Number
 type IterationCount = Integer
 type PointData = (ComplexNumber, IterationCount)
 type RootData = (Int, IterationCount)
-type PointField = [[PointData]]
-type RootField = [[RootData]]
 type Bounds = (Number, Number, Number, Number)
+type Step = Number
+type Color = (Word8, Word8, Word8)
 
 e :: ComplexNumber
 e = (exp 1) :+ 0
@@ -66,23 +69,22 @@ maxIterations = 100
 epsilon :: Number
 epsilon = 1e-12
 
-newton :: Function -> ComplexNumber -> PointData
-newton f z0 = newton' f z1 z0 0
-    where f' = derivative f
-          approximate f z = z - (evaluate f z) / (evaluate f' z)
-          z1 = approximate f z0
-          newton' f current previous n
+newton :: Function -> Function -> ComplexNumber -> PointData
+newton f f' z0 = newton' z1 z0 0
+    where approximate z = z - (evaluate f z) / (evaluate f' z)
+          z1 = approximate z0
+          newton' current previous n
               | n > maxIterations = (current, n)
               | magnitude (current - previous) < epsilon = (current, n)
-              | otherwise = newton' f (approximate f current) current (n + 1)
+              | otherwise = newton' (approximate current) current (n + 1)
 
-windowApply :: (ComplexNumber -> PointData) -> Bounds -> Number -> PointField
-windowApply f (top, left, bottom, right) step = [[f (x :+ y ) | x <- xs] | y <- ys]
+windowApply :: (ComplexNumber -> PointData) -> Bounds -> Step -> [PointData]
+windowApply f (top, left, bottom, right) step = [f (x :+ y ) | y <- ys, x <- xs]
     where xs = [left, left + step .. right]
           ys = [top, top + step .. bottom]
 
 approximateIndex :: ComplexNumber -> [ComplexNumber] -> Maybe Int
-approximateIndex z zs = elemIndex True [magnitude (z - zi) < 1 | zi <- zs]
+approximateIndex z zs = elemIndex True [magnitude (z - zi) < epsilon * 2 | zi <- zs]
 
 closestIndex :: ComplexNumber -> [ComplexNumber] -> Int
 closestIndex z zs = snd . minimum $ zip [magnitude (z - zi) | zi <- zs] [0..]
@@ -92,20 +94,56 @@ closeEnough z zs = case approximateIndex z zs of
     Just _ -> True
     Nothing ->  False
 
-roots :: PointField -> [ComplexNumber]
-roots field = foldr checkRoot [] flat
+roots :: [PointData] -> [ComplexNumber]
+roots ps = foldr checkRoot [] zs
     where checkRoot z roots
               | z `closeEnough` roots = roots
               | otherwise = z:roots
-          flat = fst . unzip . concat $ field
+          zs = fst . unzip $ ps
 
 assignRoot :: [ComplexNumber] -> PointData -> RootData
-assignRoot rs p@(z, iteration) = (closestIndex z rs, iteration)
+assignRoot rs p@(z, i) = (closestIndex z rs, i)
 
-assignRoots :: PointField -> RootField
-assignRoots field = [[assignRoot fieldRoots p | p <- ps ] | ps <- field]
-    where fieldRoots = roots field
+colorRoot :: RootData -> Color
+colorRoot (n, i) = (ra, ga, ba)
+    where colors = [ (0, 0, 0)
+                   , (255, 0, 0)
+                   , (0, 255, 0)
+                   , (0, 0, 255)
+                   , (255, 255, 0)
+                   , (255, 0, 255)
+                   , (0, 255, 255)
+                   , (255, 255, 255)
+                   ]
+          (r, g, b) = colors !! n
+          ii = max i 1
+          ra = fromIntegral . min 255  $ 4 * r `div` ii
+          ga = fromIntegral . min 255  $ 4 * g `div` ii
+          ba = fromIntegral . min 255  $ 4 * b `div` ii
 
-hi = Sum (Power 3 Z) (realConstant (-1))
 
-main = mapM_ print $ assignRoots $ windowApply (newton hi) (-10, -10, 10, 10) 0.1
+colorRoots :: Function -> Bounds -> Step -> [Color]
+colorRoots f bounds step = map colorRoot rds
+    where ps = windowApply (newton f (derivative f)) bounds step
+          rs = roots ps
+          rds = map (assignRoot rs) ps
+
+arrayify :: Int -> Int -> [Color] -> R.Array R.U R.DIM2 Color
+arrayify width height =
+    R.fromListUnboxed (R.Z R.:. height R.:. width :: R.DIM2)
+
+f = Sum (Power 3 Z) (realConstant (-1))
+
+main = do
+    args <- getArgs
+    let [fileName, stringTop, stringLeft, stringBottom, stringRight, stringStep] = args
+        top = read stringTop
+        left = read stringLeft
+        bottom = read stringBottom
+        right = read stringRight
+        step = read stringStep
+        width = floor ((right - left) / step) + 1
+        height = floor ((bottom - top) / step) + 1
+        colorList = colorRoots f (top, left, bottom, right) step
+        colorArray = arrayify width height colorList
+    writeImageToBMP fileName colorArray
